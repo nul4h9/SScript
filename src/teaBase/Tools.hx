@@ -19,21 +19,68 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
-package hscriptBase;
-import hscriptBase.Expr;
+package teaBase;
+import teaBase.Expr;
+
+#if macro
+import haxe.macro.Context;
+import haxe.macro.TypeTools;
+#end
 
 using StringTools;
 
-@:access(hscriptBase.Interp)
+@:access(teaBase.Interp)
 class Tools {
-	static final thisName:String = 'hscriptBase.Tools';
+	static final thisName:String = 'teaBase.Tools';
 
-	public static var keys:Array<String> = [
+	static var keys:Array<String> = [
 		"import", "package", "if", "var", "for", "while", "final", "do", "as", "using", "break", "continue",
 		"public", "private", "static", "overload", "override", "class", "function", "else", "try", "catch",
 		"abstract", "case", "switch", "untyped", "cast", "typedef", "dynamic", "default", "enum", "extern",
 		"extends", "implements", "in", "macro", "new", "null", "return", "throw", "from", "to", "super", "is"
 	];
+
+	static var enumKeys:Array<String> = {
+		var keys = keys.copy();
+		var remove = ["var","public","private","function","try","catch","abstract","enum","switch","case","new","null","throw"];
+		for( i in remove )
+			keys.remove(i);
+		keys;
+	}
+
+	public static function resolve( clOrEnum : String ) {
+		var cl:Dynamic = Type.resolveEnum(clOrEnum);
+		if( cl == null ) cl = Type.resolveClass(clOrEnum);
+		return cl;
+	}
+
+	public static function checkType(v:Dynamic,v1:Dynamic)
+	{
+		return resolveType(v) + " should be " + resolveType(v1);
+	}
+
+	public static function resolveType( field : Dynamic ) : String {
+		if( field != null ) {
+			var n = Type.getEnumName(field);
+			if( n == null ) n = Type.getClassName(field);
+			if( n == null ) {
+				if( Std.isOfType(field,Int) )
+					n = 'Int';
+				else if( Std.isOfType(field,Float) )
+					n = 'Float';
+				else if( Std.isOfType(field,String) )
+					n = 'String';
+				else if( Std.isOfType(field,Array) )
+					n = 'Array';
+				else if( Std.isOfType(field,Bool) )
+					n = 'Bool';
+				else if( Std.isOfType(field,Dynamic) )
+					n = 'Dynamic';
+			}
+			return n;
+		}
+		return "null";
+	}
 
 	public static function ctToType( ct : CType ):String {
 		var ctToType:(ct:CType)->String = function(ct)
@@ -108,4 +155,53 @@ class Tools {
 	public static inline function expr( e : Expr ) : ExprDef {
 		return if (e == null) null else e.e;
 	}
+
+	#if !DISABLED_MACRO_SUPERLATIVE
+    macro static function build() 
+    {
+        Context.onGenerate(function(types) 
+        {
+            var names = [], self = TypeTools.getClass(Context.getType(thisName));
+                
+            for (t in types)
+                switch t 
+                {
+                    case TInst(_.get() => c, _):
+                        var name: Array<String> = c.pack.copy();
+                        name.push(c.name);
+                        names.push(Context.makeExpr(name.join("."), c.pos));
+                    default:
+                }
+
+            self.meta.remove('classes');
+            self.meta.add('classes', names, self.pos);
+        });
+        return macro cast haxe.rtti.Meta.getType($p{thisName.split('.')});
+    }
+
+    #if !macro
+	static final allNamesAvailable:Array<String> = [];
+    static final allClassesAvailable:Map<String, Class<Dynamic>> = {
+        function returnMap()
+        {
+            var r:Array<String> = build().classes;
+            var map = new Map<String, Class<Dynamic>>();
+
+            for (i in r) 
+            {
+                if (i.indexOf('_Impl_') == -1) // Private class
+                {
+                    var c = Type.resolveClass(i);
+                    if (c != null)
+                        map[i] = c;
+					allNamesAvailable.push(i);
+                }
+            }
+			
+            return map;
+        }
+        returnMap();
+    }
+	#end
+    #end
 }

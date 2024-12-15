@@ -5,8 +5,8 @@ import ex.*;
 import haxe.Exception;
 import haxe.Timer;
 
-import hscriptBase.*;
-import hscriptBase.Expr;
+import teaBase.*;
+import teaBase.Expr;
 
 #if sys
 import sys.FileSystem;
@@ -14,11 +14,11 @@ import sys.io.File;
 #end
 
 import tea.backend.*;
-import tea.backend.crypto.Base32;
+import tea.backend.TeaPreset.TeaPresetMode;
 
 using StringTools;
 
-typedef TeaCall =
+typedef Tea =
 {
 	#if sys
 	public var ?fileName(default, null):String;
@@ -26,42 +26,47 @@ typedef TeaCall =
 	
 	public var succeeded(default, null):Bool;
 
-	
 	public var calledFunction(default, null):String;
 
-	
 	public var returnValue(default, null):Null<Dynamic>;
 
-	
-	public var exceptions(default, null):Array<SScriptException>;
+	public var exceptions(default, null):Array<TeaException>;
+
+	public var lastReportedTime(default, null):Float;
 }
 
-/**
-	The base class for dynamic Haxe scripts.
-**/
 @:structInit
-@:access(hscriptBase.Interp)
-@:access(hscriptBase.Parser)
+@:access(tea.backend.TeaPreset)
+@:access(teaBase.Interp)
+@:access(teaBase.Parser)
+@:access(teaBase.Tools)
+@:access(llua.Interp3LL)
 @:keepSub
 class SScript
 {
-	public static var IGNORE_RETURN(default, never):Dynamic = "#0IGNORE#0RETURN#0VALUE#0";
+	public static var defaultImprovedField(default, set):Null<Bool> = true;
 
-	public static var STOP_RETURN(default, never):Dynamic = "#1STOP#1RETURN#1VALUE#1";
-
-	public static var VERSION(default, null):SScriptVer = new SScriptVer(7, 7, 0);
-	
 	public static var defaultTypeCheck(default, set):Null<Bool> = true;
 
-	public static var defaultDebug(default, set):Null<Bool> = #if debug true #else null #end;
+	public static var defaultDebug(default, set):Null<Bool> = null;
 
-	public static var globalVariables:SScriptGlobalMap = new SScriptGlobalMap();
+	public static var defaultTeaPreset:TeaPresetMode = MINI;
+
+	public static var globalVariables:TeaGlobalMap = new TeaGlobalMap();
 
 	public static var global(default, null):Map<String, SScript> = [];
+
+	public static var defaultFun(default, set):String = "main";
 	
 	static var IDCount(default, null):Int = 0;
 
 	static var BlankReg(get, never):EReg;
+
+	static var classReg(get, never):EReg;
+	
+	public var defaultFunc:String = null;
+
+	public var improvedField(default, set):Null<Bool> = true;
 
 	public var customOrigin(default, set):String;
 
@@ -73,9 +78,9 @@ class SScript
 
 	public var lastReportedTime(default, null):Float = -1;
 
-	public var lastReportedCallTime(default, null):Float = -1;
-
 	public var notAllowedClasses(default, null):Array<Class<Dynamic>> = [];
+
+	public var presetter(default, null):TeaPreset;
 
 	public var variables(get, never):Map<String, Dynamic>;
 
@@ -93,12 +98,11 @@ class SScript
 
 	public var debugTraces:Bool = false;
 
-	public var parsingException(default, null):SScriptException;
+	public var parsingException(default, null):TeaException;
+
+	public var classPath(get, null):String;
 
 	public var packagePath(get, null):String = "";
-
-	@:deprecated("parsingExceptions are deprecated, use parsingException instead")
-	var parsingExceptions(get, never):Array<Exception>;
 
 	@:noPrivateAccess var _destroyed(default, null):Bool;
 
@@ -110,19 +114,27 @@ class SScript
 			typeCheck = defaultTypeCheck;
 		if (defaultDebug != null)
 			debugTraces = defaultDebug;
+		if (defaultFun != null)
+			defaultFunc = defaultFun;
 
 		interp = new Interp();
 		interp.setScr(this);
+		
+		if (defaultImprovedField != null)
+			improvedField = defaultImprovedField;
+		else 
+			improvedField = improvedField;
 
 		parser = new Parser();
 
+		presetter = new TeaPreset(this);
 		if (preset)
 			this.preset();
 
 		for (i => k in globalVariables)
 		{
 			if (i != null)
-				set(i, k);
+				set(i, k, true);
 		}
 
 		try 
@@ -135,9 +147,9 @@ class SScript
 			if (debugTraces && scriptPath != null && scriptPath.length > 0)
 			{
 				if (lastReportedTime == 0)
-					trace('SScript instance created instantly (0s)');
+					trace('Tea brewed instantly (0 seconds)');
 				else 
-					trace('SScript instance created in ${lastReportedTime}s');
+					trace('Tea brewed in ${lastReportedTime} seconds');
 			}
 		}
 		catch (e)
@@ -148,11 +160,10 @@ class SScript
 
 	public function execute():Void
 	{
-		if (_destroyed)
+		if (_destroyed || !active)
 			return;
 
-		if (interp == null || !active)
-			return;
+		parsingException = null;
 
 		var origin:String = {
 			if (customOrigin != null && customOrigin.length > 0)
@@ -166,51 +177,54 @@ class SScript
 		if (script != null && script.length > 0)
 		{
 			resetInterp();
+
+			function tryHaxe()
+			{
+				try 
+				{
+					var expr:Expr = parser.parseString(script, origin);
+					var r = interp.execute(expr);
+					returnValue = r;
+				}
+				catch (e) 
+				{
+					parsingException = e;				
+					returnValue = null;
+				}
+				
+				if (defaultFunc != null)
+					call(defaultFunc);
+			}
 			
-			try 
-			{
-				var expr:Expr = parser.parseString(script, origin);
-				var r = interp.execute(expr);
-				returnValue = r;
-			}
-			catch (e) 
-			{
-				parsingException = e;
-				returnValue = null;
-			}
+			tryHaxe();
 		}
 	}
 
-	public function set(key:String, obj:Dynamic):SScript
+	public function set(key:String, ?obj:Dynamic, ?setAsFinal:Bool = false):SScript
 	{
 		if (_destroyed)
 			return null;
-
-		if (obj != null && (obj is Class) && notAllowedClasses.contains(obj))
-			throw 'Tried to set ${Type.getClassName(obj)} which is not allowed.';
+		if (!active)
+			return this;
+		
+		if (key == null || BlankReg.match(key) || !classReg.match(key))
+			throw '$key is not a valid class name';
+		else if (obj != null && (obj is Class) && notAllowedClasses.contains(obj))
+			throw 'Tried to set ${Type.getClassName(obj)} which is not allowed';
+		else if (Tools.keys.contains(key))
+			throw '$key is a keyword and cannot be replaced';
 
 		function setVar(key:String, obj:Dynamic):Void
 		{
-			if (key == null)
-				return;
-
-			if (Tools.keys.contains(key))
-				throw '$key is a keyword, set something else';
-			if (!active)
-				return;
-
-			if (interp == null || !active)
-			{
-				if (traces)
-				{
-					if (interp == null)
-						trace("This script is unusable!");
-					else
-						trace("This script is not active!");
+			if (setAsFinal)
+				interp.finalVariables[key] = obj;
+			else 
+				switch Type.typeof(obj) {
+					case TFunction | TClass(_) | TEnum(_): 
+						interp.finalVariables[key] = obj;
+					case _:
+						interp.variables[key] = obj;
 				}
-			}
-			else
-				interp.variables[key] = obj;
 		}
 
 		setVar(key, obj);
@@ -289,7 +303,7 @@ class SScript
 				throw 'Special object cannot be ${i}';
 
 		if (interp.specialObject == null)
-			interp.specialObject = {obj: null , includeFunctions: null , exclusions: null };
+			interp.specialObject = {obj: null, includeFunctions: null, exclusions: null};
 
 		interp.specialObject.obj = obj;
 		interp.specialObject.exclusions = exclusions.copy();
@@ -319,11 +333,19 @@ class SScript
 	{
 		if (_destroyed)
 			return null;
-
-		if (interp == null || !active || key == null || !interp.variables.exists(key))
+		if (BlankReg.match(key) || !classReg.match(key))
+			return this;
+		if (!active)
 				return null;
 
-		interp.variables.remove(key);
+		for (i in [interp.finalVariables, interp.variables])
+		{
+			if (i.exists(key))
+			{
+				i.remove(key);
+			}
+		}
+
 		return this;
 	}
 
@@ -331,16 +353,13 @@ class SScript
 	{
 		if (_destroyed)
 			return null;
+		if (BlankReg.match(key) || !classReg.match(key))
+			return null;
 
-		if (interp == null || !active)
+		if (!active)
 		{
 			if (traces)
-			{
-				if (interp == null)
-					trace("This script is unusable!");
-				else
-					trace("This script is not active!");
-			}
+				trace("This tea is not active!");
 
 			return null;
 		}
@@ -349,35 +368,42 @@ class SScript
 		if (l.exists(key))
 			return l[key];
 
-		return if (exists(key)) interp.variables[key] else null;
+		var r = interp.finalVariables.get(key);
+		if (r == null)
+			r = interp.variables.get(key);
+
+		return r;
 	}
 
-	public function call(func:String, ?args:Array<Dynamic>):TeaCall
+	public function call(func:String, ?args:Array<Dynamic>):Tea
 	{
 		if (_destroyed)
 			return {
-				exceptions: [new SScriptException(new Exception((if (scriptFile != null && scriptFile.length > 0) scriptFile else "SScript instance") + " is destroyed."))],
+				exceptions: [new TeaException(new Exception((if (scriptFile != null && scriptFile.length > 0) scriptFile else "Tea instance") + " is destroyed."))],
 				calledFunction: func,
 				succeeded: false,
-				returnValue: null
+				returnValue: null,
+				lastReportedTime: -1
 			};
 
 		if (!active)
 			return {
-				exceptions: [new SScriptException(new Exception((if (scriptFile != null && scriptFile.length > 0) scriptFile else "SScript instance") + " is not active."))],
+				exceptions: [new TeaException(new Exception((if (scriptFile != null && scriptFile.length > 0) scriptFile else "Tea instance") + " is not active."))],
 				calledFunction: func,
 				succeeded: false,
-				returnValue: null
+				returnValue: null,
+				lastReportedTime: -1
 			};
 
 		var time:Float = Timer.stamp();
 
 		var scriptFile:String = if (scriptFile != null && scriptFile.length > 0) scriptFile else "";
-		var caller:TeaCall = {
+		var caller:Tea = {
 			exceptions: [],
 			calledFunction: func,
 			succeeded: false,
-			returnValue: null
+			returnValue: null,
+			lastReportedTime: -1
 		}
 		#if sys
 		if (scriptFile != null && scriptFile.length > 0)
@@ -390,16 +416,16 @@ class SScript
 		function pushException(e:String)
 		{
 			if (!pushedExceptions.contains(e))
-				caller.exceptions.push(new SScriptException(new Exception(e)));
+				caller.exceptions.push(new TeaException(new Exception(e)));
 			
 			pushedExceptions.push(e);
 		}
-		if (func == null)
+		if (func == null || BlankReg.match(func) || !classReg.match(func))
 		{
 			if (traces)
-				trace('Function name cannot be null for $scriptFile!');
+				trace('Function name cannot be invalid for $scriptFile!');
 
-			pushException('Function name cannot be null for $scriptFile!');
+			pushException('Function name cannot be invalid for $scriptFile!');
 			return caller;
 		}
 		
@@ -411,25 +437,15 @@ class SScript
 
 			pushException('$func is not a function');
 		}
-		else if (interp == null || !exists(func))
+		else if (!exists(func))
 		{
-			if (interp == null)
-			{
-				if (traces)
-					trace('Interpreter is null!');
+			if (traces)
+				trace('Function $func does not exist in $scriptFile.');
 
-				pushException('Interpreter is null!');
-			}
-			else
-			{
-				if (traces)
-					trace('Function $func does not exist in $scriptFile.');
-
-				if (scriptFile != null && scriptFile.length > 1)
-					pushException('Function $func does not exist in $scriptFile.');
-				else 
-					pushException('Function $func does not exist in SScript instance.');
-			}
+			if (scriptFile != null && scriptFile.length > 0)
+				pushException('Function $func does not exist in $scriptFile.');
+			else 
+				pushException('Function $func does not exist in Tea instance.');
 		}
 		else 
 		{
@@ -441,20 +457,21 @@ class SScript
 					exceptions: caller.exceptions,
 					calledFunction: func,
 					succeeded: true,
-					returnValue: functionField
+					returnValue: functionField,
+					lastReportedTime: -1,
 				};
 				#if sys
 				if (scriptFile != null && scriptFile.length > 0)
 					Reflect.setField(caller, "fileName", scriptFile);
 				#end
+				Reflect.setField(caller, "lastReportedTime", Timer.stamp() - time);
 			}
 			catch (e)
 			{
 				caller = oldCaller;
-				caller.exceptions.insert(0, new SScriptException(e));
+				caller.exceptions.insert(0, new TeaException(e));
 			}
 		}
-		lastReportedCallTime = Timer.stamp() - time;
 
 		return caller;
 	}
@@ -466,14 +483,11 @@ class SScript
 		if (!active)
 			return this;
 
-		if (interp == null)
-			return this;
-
-		var importantThings:Array<String> = ['true', 'false', 'null', 'trace'];
-
 		for (i in interp.variables.keys())
-			if (!importantThings.contains(i))
 				interp.variables.remove(i);
+
+		for (i in interp.finalVariables.keys())
+			interp.finalVariables.remove(i);
 
 		return this;
 	}
@@ -484,14 +498,19 @@ class SScript
 			return false;
 		if (!active)
 			return false;
-
-		if (interp == null)
+		if (BlankReg.match(key) || !classReg.match(key))
 			return false;
+
 		var l = locals();
 		if (l.exists(key))
 			return l.exists(key);
 
-		return interp.variables.exists(key);
+		for (i in [interp.variables, interp.finalVariables])
+		{
+			if (i.exists(key))
+				return true;
+		}
+		return false;
 	}
 
 	public function preset():Void
@@ -501,38 +520,34 @@ class SScript
 		if (!active)
 			return;
 
-		setClass(Date);
-		setClass(DateTools);
-		setClass(Math);
-		setClass(Reflect);
-		setClass(Std);
-		setClass(SScript);
-		setClass(StringTools);
-		setClass(Type);
-
-		#if sys
-		setClass(File);
-		setClass(FileSystem);
-		setClass(Sys);
-		#end
+		presetter.preset();
 	}
 
 	function resetInterp():Void
 	{
 		if (_destroyed)
 			return;
-		if (interp == null)
-			return;
 
 		interp.locals = #if haxe3 new Map() #else new Hash() #end;
 		while (interp.declared.length > 0)
 			interp.declared.pop();
+		while (interp.pushedVars.length > 0)
+			interp.pushedVars.pop();
+	}
+
+	function destroyInterp():Void 
+	{
+		if (_destroyed)
+			return;
+
+		interp.locals = null;
+		interp.variables = null;
+		interp.finalVariables = null;
+		interp.declared = null;
 	}
 
 	function doFile(scriptPath:String):Void
 	{
-		parsingException = null;
-
 		if (_destroyed)
 			return;
 
@@ -584,6 +599,9 @@ class SScript
 		try 
 		{
 			#if sys
+			if (FileSystem.exists(string.trim()))
+				string = string.trim();
+			
 			if (FileSystem.exists(string))
 			{
 				scriptFile = string;
@@ -600,47 +618,51 @@ class SScript
 			if (og == null || og.length < 1)
 				og = "SScript";
 
-			if (!active || interp == null)
-				return null;
-
 			resetInterp();
-
-			try
-			{	
-				script = string;
-
-				if (scriptFile != null && scriptFile.length > 0)
-				{
-					if (ID != null)
-						global.remove(Std.string(ID));
-					global[scriptFile] = this;
-				}
-				else if (script != null && script.length > 0)
-				{
-					if (ID != null)
-						global.remove(Std.string(ID));
-					global[script] = this;
-				}
-
-				var expr:Expr = parser.parseString(script, og);
-				var r = interp.execute(expr);
-				returnValue = r;
-			}
-			catch (e)
+		
+			script = string;
+			
+			if (scriptFile != null && scriptFile.length > 0)
 			{
-				script = "";
-				parsingException = e;
-				returnValue = null;
+				if (ID != null)
+					global.remove(Std.string(ID));
+				global[scriptFile] = this;
 			}
+			else if (script != null && script.length > 0)
+			{
+				if (ID != null)
+					global.remove(Std.string(ID));
+				global[script] = this;
+			}
+
+			function tryHaxe()
+			{
+				try 
+				{
+					var expr:Expr = parser.parseString(script, og);
+					var r = interp.execute(expr);
+					returnValue = r;
+				}
+				catch (e) 
+				{
+					parsingException = e;				
+					returnValue = null;
+				}
+
+				if (defaultFunc != null)
+					call(defaultFunc);
+			}
+
+			tryHaxe();	
 			
 			lastReportedTime = Timer.stamp() - time;
  
 			if (debugTraces)
 			{
 				if (lastReportedTime == 0)
-					trace('SScript instance created instantly (0s)');
+					trace('Tea instance brewed instantly (0s)');
 				else 
-					trace('SScript instance created in ${lastReportedTime}s');
+					trace('Tea instance brewed in ${lastReportedTime}s');
 			}
 		}
 		catch (e) lastReportedTime = -1;
@@ -656,7 +678,7 @@ class SScript
 		if (scriptFile != null && scriptFile.length > 0)
 			return scriptFile;
 
-		return "[SScript SScript]";
+		return "Tea";
 	}
 
 	public static function listScripts(path:String, ?extensions:Array<String>):Array<SScript>
@@ -697,25 +719,58 @@ class SScript
 		if (_destroyed)
 			return;
 
-		if (global.exists(script) && script != null && script.length > 0)
-			global.remove(script);
 		if (global.exists(scriptFile) && scriptFile != null && scriptFile.length > 0)
 			global.remove(scriptFile);
+		else if (global.exists(script) && script != null && script.length > 0)
+			global.remove(script);
+		if (global.exists(Std.string(ID)))
+			global.remove(script);
+		
+		if (classPath != null && classPath.length > 0)
+		{
+			Interp.classes.remove(classPath);
+			Interp.STATICPACKAGES[classPath] = null;
+			Interp.STATICPACKAGES.remove(classPath);
+		}
+
+		for (i in interp.pushedClasses)
+		{
+			Interp.classes.remove(i);
+			Interp.STATICPACKAGES[i] = null;
+			Interp.STATICPACKAGES.remove(i);
+		} 
+
+		for (i in interp.pushedAbs)
+		{
+			Interp.eabstracts.remove(i);
+			Interp.EABSTRACTS[i].tea = null;
+			Interp.EABSTRACTS[i].fileName = null;
+			Interp.EABSTRACTS.remove(i);
+		} 
+		
+		for (i in interp.pushedVars) 
+		{
+			if (globalVariables.exists(i))
+				globalVariables.remove(i);
+		}
+
+		presetter.destroy();
 
 		clear();
 		resetInterp();
+		destroyInterp();
 
+		parsingException = null;
 		customOrigin = null;
 		parser = null;
 		interp = null;
 		script = null;
 		scriptFile = null;
 		active = false;
+		improvedField = null;
 		notAllowedClasses = null;
-		lastReportedCallTime = -1;
 		lastReportedTime = -1;
 		ID = null;
-		parsingException = null;
 		returnValue = null;
 		_destroyed = true;
 	}
@@ -726,6 +781,22 @@ class SScript
 			return null;
 
 		return interp.variables;
+	}
+
+	function get_classPath():String 
+	{
+		if (_destroyed)
+			return null;
+
+		return classPath;
+	}
+
+	function setClassPath(p):String 
+	{
+		if (_destroyed)
+			return null;
+
+		return classPath = p;
 	}
 
 	function setPackagePath(p):String
@@ -744,11 +815,6 @@ class SScript
 		return packagePath;
 	}
 
-	static function get_BlankReg():EReg 
-	{
-		return ~/^[\n\r\t]$/;
-	}
-
 	function set_customOrigin(value:String):String
 	{
 		if (_destroyed)
@@ -758,12 +824,32 @@ class SScript
 		return customOrigin = value;
 	}
 
+	function set_improvedField(value:Null<Bool>):Null<Bool> 
+	{
+		if (_destroyed)
+			return null;
+
+		if (interp != null)
+			interp.improvedField = value == null ? false : value;
+		return improvedField = value;
+	}
+
+	static function get_BlankReg():EReg 
+	{
+		return ~/^[\n\r\t]$/;
+	}
+
+	static function get_classReg():EReg 
+	{
+		return  ~/^[a-zA-Z_][a-zA-Z0-9_]*$/;
+	}
+
 	static function set_defaultTypeCheck(value:Null<Bool>):Null<Bool> 
 	{
 		for (i in global)
 		{
-			i.typeCheck = value == null ? false : value;
-			//i.execute();
+			if (i != null && !i._destroyed)
+				i.typeCheck = value == null ? false : value;
 		}
 
 		return defaultTypeCheck = value;
@@ -773,21 +859,32 @@ class SScript
 	{
 		for (i in global)
 		{
-			i.debugTraces = value == null ? false : value;
-			//i.execute();
+			if (i != null && !i._destroyed)
+				i.debugTraces = value == null ? false : value;
 		}
 	
 		return defaultDebug = value;
 	}
 
-	function get_parsingExceptions():Array<Exception> 
+	static function set_defaultFun(value:String):String 
 	{
-		if (_destroyed)
-			return null;
+		for (i in global) 
+		{
+			if (i != null && !i._destroyed)
+				i.defaultFunc = value;
+		}
 
-		if (parsingException == null)
-			return [];
+		return defaultFun = value;
+	}
 
-		return @:privateAccess [parsingException.toException()];
+	static function set_defaultImprovedField(value:Null<Bool>):Null<Bool> 
+	{
+		for (i in global) 
+		{
+			if (i != null && !i._destroyed)
+				i.improvedField = value;
+		}
+
+		return defaultImprovedField = value;
 	}
 }

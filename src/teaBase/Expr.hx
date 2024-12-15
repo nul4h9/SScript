@@ -19,12 +19,12 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
-package hscriptBase;
+package teaBase;
 
 enum Const {
 	CInt( v : Int );
 	CFloat( f : Float );
-	CString( s : String , ?interpolated:Bool);
+	CString( s : String , ?allowsInterp:Bool);
 	#if !haxe3
 	CInt32( v : haxe.Int32 );
 	#end
@@ -39,26 +39,30 @@ typedef Expr = {
 }
 
 enum ExprDef {
+	EPublic( e : Expr );
+	EPrivate( e : Expr );
+	EStatic( e : Expr , ?inPublic : Bool );
+	EInterpString( strings : Array< String > , interpolatedString : Array< { str : String , index : Int } > );
 	EConst( c : Const );
-	EIdent( v : String , ?isFinal : Bool );
-	EVar( n : String, ?t : CType, ?e : Expr , ?g : Array<String> );
-	EFinal( f : String , ?t : CType , ?e : Expr );
+	EIdent( v : String );
+	EVar( n : String, finall : Bool , ?t : CType, ?e : Expr );
 	EParent( e : Expr );
 	EBlock( e : Array<Expr> );
-	EField( e : Expr, f : String );
+	EField( e : Expr, f : String , fAll : Array< String > );
 	EBinop( op : String, e1 : Expr, e2 : Expr );
 	ESwitchBinop( p : Expr , e1 : Expr , e2 : Expr );
 	EUnop( op : String, prefix : Bool, e : Expr );
 	ECall( e : Expr, params : Array<Expr> );
 	EIf( cond : Expr, e1 : Expr, ?e2 : Expr );
 	EWhile( cond : Expr, e : Expr );
-	EFor( v : String, it : Expr, e : Expr );
+	EFor( v : String, v2 : String , it : Expr, e : Expr );
 	ECoalesce( e1 : Expr , e2 : Expr , assign : Bool);
 	ESafeNavigator( e1 : Expr , f : String );
 	EBreak;
 	EContinue;
-	EFunction( args : Array<Argument>, e : Expr, ?name : String, ?ret : CType , ?d : DynamicToken );
-	EReturn( ?e : Expr );
+	EFunction( args : Array<Argument>, e : Expr, ?name : String, ?ret : CType , ?line : Int );
+	EReturnEmpty;
+	EReturn( e : Expr );
 	EArray( e : Expr, index : Expr );
 	EArrayDecl( e : Array<Expr> );
 	ENew( cl : String, params : Array<Expr> , ?subIds : Array<String> );
@@ -69,13 +73,15 @@ enum ExprDef {
 	ESwitch( e : Expr, cases : Array<{ values : Array<Expr>, expr : Expr , ifExpr : Expr }>, ?defaultExpr : Expr);
 	EDoWhile( cond : Expr, e : Expr);
 	EUsing( op : Dynamic , n : String );
-	EImport( i : Dynamic, c : String , ?asIdent : String );
+	EImport( i : Dynamic, c : String , ?asIdent : String , ?fullName : String );
+	EImportStar( pkg : String );
+	EClass( cl : String , exprs : Array<Expr> );
+	EEAbstract( ident : String , type : String , exprs : Array<Expr> , fromParent : String );
 	EPackage( ?p : String );
-	EMeta( name : String, args : Array<Expr>, e : Expr );
+	EMeta( hasDot : Bool , name : String, args : Array<Expr>, e : Expr );
+	EEReg( chars : String , ops : String );
 	ECheckType( e : Expr, t : CType );
 }
-
-typedef DynamicToken = { v : Bool };
 
 typedef Argument = { name : String, ?t : CType, ?opt : Bool, ?value : Expr };
 
@@ -96,18 +102,22 @@ class Error {
 	public var pmax : Int;
 	public var origin : String;
 	public var line : Int;
-	public function new(e, pmin, pmax, origin, line) {
+	public var currentArg : String;
+	public function new(e, pmin, pmax, origin, line, ?currentArg) {
 		this.e = e;
 		this.pmin = pmin;
 		this.pmax = pmax;
 		this.origin = origin;
 		this.line = line;
+		this.currentArg = currentArg;
 	}
 	public function toString(): String {
 		return Printer.errorToString(this);
 	}
 }
 enum ErrorDef {
+	ENullObjectReference;
+	ETypeName;
 	EDuplicate( v : String );
 	EInvalidChar( c : Int );
 	EUnexpected( s : String );
@@ -119,12 +129,22 @@ enum ErrorDef {
 	EInvalidIterator( v : String );
 	EInvalidOp( op : String );
 	EInvalidAccess( f : String );
+	EInvalidAssign;
+	ETypeNotFound( t : String );
+	EWriting;
 	EUnmatchingType( v : String , t : String , ?varn : String );
 	ECustom( msg : String );
 	EInvalidFinal( ?v : String );
+	EDoNotHaveField( cl : TeaClass , f : String );
+	EAbstractField( abs : TeaEAbstract , f : String );
 	EUnexistingField( f : Dynamic , f2 : Dynamic );
+	EPrivateField( f : String );
 	EUnknownIdentifier( s : String );
-	EUpperCase( );
+	EUpperCase;
+	ECannotUseAbs;
+	EAlreadyModule( m : String , ?fileName : String );
+	EMultipleDecl( cl : String , ?fileName : String );
+	ESuper;
 }
 
 

@@ -11,12 +11,12 @@ import tea.SScript;
 /**
     A custom type of map which sets values to scripts in global.
 **/
-typedef SScriptGlobalMap = SScriptTypedGlobalMap<String, Dynamic>;
+typedef TeaGlobalMap = TeaTypedGlobalMap<String, Dynamic>;
 
 @:transitive
 @:multiType(@:followWithAbstracts K)
 @:access(tea.SScript)
-abstract SScriptTypedGlobalMap<K, V>(IMap<K, V>) 
+abstract TeaTypedGlobalMap<K, V>(IMap<K, V>) 
 {
 	public function new();
 
@@ -29,7 +29,7 @@ abstract SScriptTypedGlobalMap<K, V>(IMap<K, V>)
         for (i in SScript.global)
         {
             if (!i._destroyed)
-                i.set(key, value);
+                i.set(key, value, true);
         }
     }
 
@@ -40,7 +40,19 @@ abstract SScriptTypedGlobalMap<K, V>(IMap<K, V>)
 		return this.exists(key);
 
 	public inline function remove(key:K)
+	{
+		var k:String = cast key;
+		for (i in SScript.global)
+        {
+            for (i in SScript.global)
+			{
+				if (!i._destroyed)
+					i.unset(k);
+			}
+        }
+
 		return this.remove(key);
+	}
 
 	public inline function keys():Iterator<K> 
 		return this.keys();
@@ -68,7 +80,7 @@ abstract SScriptTypedGlobalMap<K, V>(IMap<K, V>)
         for (i in SScript.global)
         {
             if (!i._destroyed)
-                i.set(key, value);
+                i.set(key, value, true);
         }
 		return v;
 	}
@@ -85,12 +97,12 @@ abstract SScriptTypedGlobalMap<K, V>(IMap<K, V>)
 	@:to static inline function toObjectMap<K:{}, V>(t:IMap<K, V>):ObjectMap<K, V> 
 		return new ObjectMap<K, V>();
 
-	@:from static inline function fromStringMap<V>(map:StringMap<V>):SScriptTypedGlobalMap<String, V> 
+	@:from static inline function fromStringMap<V>(map:StringMap<V>):TeaTypedGlobalMap<String, V> 
 		return cast map;
 
-	@:from static inline function fromIntMap<V>(map:IntMap<V>):SScriptTypedGlobalMap<Int, V> 
+	@:from static inline function fromIntMap<V>(map:IntMap<V>):TeaTypedGlobalMap<Int, V> 
 		return cast map;
 
-	@:from static inline function fromObjectMap<K:{}, V>(map:ObjectMap<K, V>):SScriptTypedGlobalMap<K, V> 
+	@:from static inline function fromObjectMap<K:{}, V>(map:ObjectMap<K, V>):TeaTypedGlobalMap<K, V> 
 		return cast map;
 }
